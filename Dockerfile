@@ -41,4 +41,4 @@ COPY --from=builder /app/shared/schema.ts ./shared/schema.ts
 EXPOSE 5000
 
 # Start script to run migrations then app
-CMD ["sh", "-c", "npx drizzle-kit push && node dist/index.js"]
+CMD ["sh", "-c", "npx drizzle-kit push && node dist/index.cjs"]
