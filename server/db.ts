@@ -10,5 +10,5 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-export const pool = new Pool({ connectionString: "postgresql://o:V4xzmUsgj1SW41qzkAEQ0QZMbLJg7Rnj@dpg-d56g8hchg0os73am2amg-a.frankfurt-postgres.render.com/o_9nk3" });
+export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool, { schema });
