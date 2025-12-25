@@ -39,13 +39,17 @@ export async function registerRoutes(
       secret: process.env.SESSION_SECRET || "dev-secret",
       resave: false,
       saveUninitialized: false,
+      proxy: true,
       cookie: {
         maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
       },
     })
   );
+
+  app.set("trust proxy", 1);
 
   // Auth routes
   app.post(api.auth.register.path, async (req, res) => {
