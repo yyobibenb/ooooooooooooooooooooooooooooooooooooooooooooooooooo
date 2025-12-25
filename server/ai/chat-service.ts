@@ -1,0 +1,250 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { getAnthropicClient } from "./anthropic-client";
+import { pickModel, getSystemPrompt, type TaskType, type ModelOverride } from "./model-router";
+import { AGENT_TOOLS } from "./tools";
+import { executeAction, type ToolResult } from "./tool-executor";
+import type { Response } from "express";
+import { db } from "../db";
+import { messages as messagesTable } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface ChatOptions {
+  taskType?: TaskType;
+  projectContext?: {
+    fileTree?: string[];
+    currentFile?: { name: string; language: string; content: string } | null;
+  };
+  maxTokens?: number;
+  conversationId?: number;
+  modelOverride?: ModelOverride;
+}
+
+const MAX_AGENT_STEPS = 10;
+
+export async function streamChatResponse(
+  messages: ChatMessage[],
+  res: Response,
+  options: ChatOptions = {}
+): Promise<string> {
+  const client = getAnthropicClient();
+  
+  const lastUserMsg = messages.filter(m => m.role === "user").pop()?.content || "";
+  
+  let taskType = options.taskType || "chat";
+  if (!options.modelOverride || options.modelOverride === "auto") {
+    const intent = await classifyIntent(lastUserMsg);
+    taskType = intent === "agent" ? "agent" : intent === "complex" ? "chat" : taskType;
+  }
+  
+  const model = pickModel(taskType, options.modelOverride);
+  const systemPrompt = getSystemPrompt(options.projectContext || {});
+
+  if (taskType === "agent") {
+    return await runAgentLoop(client, messages, res, model, systemPrompt, options);
+  }
+
+  return await runSimpleChat(client, messages, res, model, systemPrompt, options);
+}
+
+async function runSimpleChat(
+  client: Anthropic,
+  messages: ChatMessage[],
+  res: Response,
+  model: string,
+  systemPrompt: string,
+  options: ChatOptions
+): Promise<string> {
+  const anthropicMessages = messages.map(msg => ({
+    role: msg.role as "user" | "assistant",
+    content: msg.content
+  }));
+
+  let fullContent = "";
+
+  try {
+    const stream = await client.messages.stream({
+      model,
+      max_tokens: options.maxTokens || 8192,
+      system: [
+        {
+          type: "text",
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" }
+        }
+      ],
+      messages: anthropicMessages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        const text = event.delta.text;
+        fullContent += text;
+        res.write(`data: ${JSON.stringify({ content: text })}\n\n`);
+      }
+    }
+
+    res.write(`data: ${JSON.stringify({ done: true, fullContent, model })}\n\n`);
+    return fullContent;
+  } catch (error) {
+    console.error("Anthropic streaming error:", error);
+    res.write(`data: ${JSON.stringify({ error: "Failed to generate response" })}\n\n`);
+    throw error;
+  }
+}
+
+async function runAgentLoop(
+  client: Anthropic,
+  messages: ChatMessage[],
+  res: Response,
+  model: string,
+  systemPrompt: string,
+  options: ChatOptions
+): Promise<string> {
+  const anthropicMessages: Anthropic.MessageParam[] = messages.map(msg => ({
+    role: msg.role as "user" | "assistant",
+    content: msg.content
+  }));
+
+  let fullContent = "";
+  let step = 0;
+
+  while (step < MAX_AGENT_STEPS) {
+    step++;
+    
+    res.write(`data: ${JSON.stringify({ agentStep: step })}\n\n`);
+
+    try {
+      const response = await client.messages.create({
+        model,
+        max_tokens: options.maxTokens || 8192,
+        system: [
+          {
+            type: "text",
+            text: systemPrompt + "\n\nIMPORTANT: You MUST use the provided tools to perform actions. NEVER output XML tags like <write_to_file>. Call the write_file tool instead.",
+            cache_control: { type: "ephemeral" }
+          }
+        ],
+        tools: AGENT_TOOLS,
+        tool_choice: { type: "auto" },
+        messages: anthropicMessages,
+      });
+
+      let hasToolUse = false;
+      let textContent = "";
+      const toolResults: { tool_use_id: string; result: string }[] = [];
+
+      for (const block of response.content) {
+        if (block.type === "text") {
+          textContent += block.text;
+          res.write(`data: ${JSON.stringify({ content: block.text })}\n\n`);
+          fullContent += block.text;
+        } else if (block.type === "tool_use") {
+          hasToolUse = true;
+          const toolName = block.name;
+          const toolInput = block.input as Record<string, string>;
+          
+          res.write(`data: ${JSON.stringify({ 
+            toolUse: { 
+              name: toolName, 
+              input: toolInput 
+            } 
+          })}\n\n`);
+
+          const action = mapToolToAction(toolName, toolInput);
+          const result = await executeAction(action);
+          
+          res.write(`data: ${JSON.stringify({ 
+            toolResult: { 
+              name: toolName, 
+              success: result.success,
+              output: result.output?.slice(0, 500),
+              error: result.error
+            } 
+          })}\n\n`);
+
+          toolResults.push({
+            tool_use_id: block.id,
+            result: result.success 
+              ? (result.output || "Success") 
+              : `Error: ${result.error}`
+          });
+        }
+      }
+
+      if (!hasToolUse) {
+        res.write(`data: ${JSON.stringify({ done: true, fullContent, model, agentSteps: step })}\n\n`);
+        return fullContent;
+      }
+
+      anthropicMessages.push({
+        role: "assistant",
+        content: response.content
+      });
+
+      anthropicMessages.push({
+        role: "user",
+        content: toolResults.map(tr => ({
+          type: "tool_result" as const,
+          tool_use_id: tr.tool_use_id,
+          content: tr.result
+        }))
+      });
+
+      if (response.stop_reason === "end_turn") {
+        res.write(`data: ${JSON.stringify({ done: true, fullContent, model, agentSteps: step })}\n\n`);
+        return fullContent;
+      }
+
+    } catch (error) {
+      console.error("Agent step error:", error);
+      res.write(`data: ${JSON.stringify({ error: "Agent step failed", step })}\n\n`);
+      break;
+    }
+  }
+
+  res.write(`data: ${JSON.stringify({ done: true, fullContent, model, agentSteps: step, maxStepsReached: step >= MAX_AGENT_STEPS })}\n\n`);
+  return fullContent;
+}
+
+function mapToolToAction(toolName: string, input: Record<string, string>) {
+  switch (toolName) {
+    case "read_file":
+      return { type: "read_file" as const, path: input.path };
+    case "write_file":
+      return { type: "write_to_file" as const, path: input.path, content: input.content };
+    case "edit_file":
+      return { type: "apply_diff" as const, path: input.path, search: input.search, replace: input.replace };
+    case "list_files":
+      return { type: "list_files" as const, path: input.path };
+    case "search_code":
+      return { type: "search_code" as const, query: input.query };
+    case "run_command":
+      return { type: "run_command" as const, command: input.command };
+    default:
+      return { type: "message" as const, content: `Unknown tool: ${toolName}` };
+  }
+}
+
+export async function classifyIntent(userMessage: string): Promise<"simple" | "complex" | "agent"> {
+  const agentKeywords = [
+    "create", "make", "build", "write", "add", "implement", "generate",
+    "fix", "update", "change", "modify", "refactor", "delete", "remove",
+    "run", "execute", "install", "setup", "configure", "list", "show", "read",
+    "создай", "сделай", "напиши", "добавь", "исправь", "измени", "удали",
+    "покажи", "прочитай", "файл", "file", "code", "код"
+  ];
+  
+  const lowerMsg = userMessage.toLowerCase();
+  const hasAgentKeyword = agentKeywords.some(kw => lowerMsg.includes(kw));
+
+  if (hasAgentKeyword) {
+    return "agent";
+  }
+
+  return "complex";
+}
