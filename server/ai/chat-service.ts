@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicClient } from "./anthropic-client";
 import { pickModel, getSystemPrompt, type TaskType, type ModelOverride } from "./model-router";
 import { AGENT_TOOLS } from "./tools";
-import { executeAction, type ToolResult } from "./tool-executor";
+import { executeAction, setProjectContext, clearProjectContext, type ToolResult } from "./tool-executor";
 import type { Response } from "express";
 import { db } from "../db";
 import { messages as messagesTable } from "@shared/schema";
@@ -21,6 +21,7 @@ interface ChatOptions {
   };
   maxTokens?: number;
   conversationId?: number;
+  projectId?: number;
   modelOverride?: ModelOverride;
 }
 
@@ -35,20 +36,10 @@ export async function streamChatResponse(
   
   const lastUserMsg = messages.filter(m => m.role === "user").pop()?.content || "";
   
-  let taskType = options.taskType || "chat";
-  if (!options.modelOverride || options.modelOverride === "auto") {
-    const intent = await classifyIntent(lastUserMsg);
-    taskType = intent === "agent" ? "agent" : intent === "complex" ? "chat" : taskType;
-  }
-  
-  const model = pickModel(taskType, options.modelOverride);
+  const model = pickModel("agent", options.modelOverride);
   const systemPrompt = getSystemPrompt(options.projectContext || {});
 
-  if (taskType === "agent") {
-    return await runAgentLoop(client, messages, res, model, systemPrompt, options);
-  }
-
-  return await runSimpleChat(client, messages, res, model, systemPrompt, options);
+  return await runAgentLoop(client, messages, res, model, systemPrompt, options);
 }
 
 async function runSimpleChat(
@@ -105,6 +96,11 @@ async function runAgentLoop(
   systemPrompt: string,
   options: ChatOptions
 ): Promise<string> {
+  // Set project context for tool execution
+  if (options.projectId) {
+    setProjectContext(options.projectId);
+  }
+  
   const anthropicMessages: Anthropic.MessageParam[] = messages.map(msg => ({
     role: msg.role as "user" | "assistant",
     content: msg.content

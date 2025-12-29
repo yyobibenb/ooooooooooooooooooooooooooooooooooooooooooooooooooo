@@ -28,6 +28,7 @@ export interface IStorage {
   getProjects(userId: number): Promise<Project[]>;
   getProject(id: number): Promise<Project | undefined>;
   createProject(project: InsertProject & { userId: number }): Promise<Project>;
+  updateProject(id: number, data: { name?: string; description?: string }): Promise<Project | undefined>;
   deleteProject(id: number): Promise<void>;
 
   // File operations
@@ -76,8 +77,22 @@ export class DatabaseStorage implements IStorage {
     return newProject;
   }
 
+  async updateProject(id: number, data: { name?: string; description?: string }): Promise<Project | undefined> {
+    const [updated] = await db.update(projects).set(data).where(eq(projects.id, id)).returning();
+    return updated;
+  }
+
   async deleteProject(id: number): Promise<void> {
+    // Delete messages for conversations linked to this project
+    const projectConversations = await db.select().from(conversations).where(eq(conversations.projectId, id));
+    for (const conv of projectConversations) {
+      await db.delete(messages).where(eq(messages.conversationId, conv.id));
+    }
+    // Delete conversations linked to this project
+    await db.delete(conversations).where(eq(conversations.projectId, id));
+    // Delete files
     await db.delete(files).where(eq(files.projectId, id));
+    // Delete project
     await db.delete(projects).where(eq(projects.id, id));
   }
 

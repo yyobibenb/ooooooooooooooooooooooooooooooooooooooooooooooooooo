@@ -88,6 +88,7 @@ export function useChatStream(conversationId: number, projectId: number) {
   const [usedModel, setUsedModel] = useState<string | null>(null);
   const [agentStep, setAgentStep] = useState(0);
   const [toolActions, setToolActions] = useState<ToolAction[]>([]);
+  const [completedActions, setCompletedActions] = useState<ToolAction[]>([]);
 
   const sendMessage = async (content: string, modelOverride: ModelChoice = "auto") => {
     setIsStreaming(true);
@@ -169,6 +170,7 @@ export function useChatStream(conversationId: number, projectId: number) {
               if (data.done) {
                 setIsStreaming(false);
                 if (data.model) setUsedModel(data.model);
+                setCompletedActions(prev => [...prev, ...toolActions]);
                 queryClient.invalidateQueries({ queryKey: ["project-conversation", projectId] });
               }
             } catch (e) {
@@ -183,5 +185,5 @@ export function useChatStream(conversationId: number, projectId: number) {
     }
   };
 
-  return { sendMessage, streamingContent, isStreaming, usedModel, agentStep, toolActions };
+  return { sendMessage, streamingContent, isStreaming, usedModel, agentStep, toolActions, completedActions };
 }

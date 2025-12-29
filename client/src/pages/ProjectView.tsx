@@ -1,37 +1,88 @@
 import { useParams } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
-import { useProject, useUpdateFile } from "@/hooks/use-projects";
+import { useProject } from "@/hooks/use-projects";
 import { FileExplorer } from "@/components/IDE/FileExplorer";
 import { ChatPanel } from "@/components/IDE/ChatPanel";
 import Editor from "@monaco-editor/react";
 import { 
   Loader2, ArrowLeft, Save, Code2, 
-  MessageSquare, ChevronLeft, ChevronRight
+  Globe, Terminal, Play, Pencil, Check, X, Square
 } from "lucide-react";
 import { Link } from "wouter";
-import { useState, useEffect } from "react";
-import { type File } from "@shared/schema";
+import { useState, useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+
+interface FSFile {
+  id: string;
+  name: string;
+  path: string;
+  language: string;
+  content?: string;
+}
 
 export default function ProjectView() {
   const { id } = useParams();
   const projectId = parseInt(id || "0");
   const { user, isLoading: authLoading } = useAuth();
   const { data: project, isLoading: projectLoading } = useProject(projectId);
-  const { mutate: updateFile } = useUpdateFile();
   const { toast } = useToast();
 
-  const [activeFile, setActiveFile] = useState<File | null>(null);
+  const [activeFile, setActiveFile] = useState<FSFile | null>(null);
   const [fileContent, setFileContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const [chatExpanded, setChatExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState<"code" | "preview" | "console">("code");
+  const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [descInput, setDescInput] = useState("");
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [isRunning, setIsRunning] = useState(false);
+  const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+  const [previewPort, setPreviewPort] = useState<number | null>(null);
+  const consoleRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    if (activeFile) {
+    if (activeFile && activeFile.content !== undefined) {
       setFileContent(activeFile.content);
     }
   }, [activeFile]);
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (consoleRef.current) {
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    }
+  }, [consoleOutput]);
+
+  const handleSave = async () => {
+    if (!activeFile) return;
+    setIsSaving(true);
+    
+    try {
+      const res = await fetch(`/api/fs/${projectId}/file`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: activeFile.path, content: fileContent }),
+        credentials: "include",
+      });
+      
+      if (res.ok) {
+        setActiveFile({ ...activeFile, content: fileContent });
+        toast({ title: "Saved", description: `${activeFile.name} saved.` });
+      }
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to save file", variant: "destructive" });
+    }
+    setIsSaving(false);
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -44,7 +95,7 @@ export default function ProjectView() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, fileContent, isSaving, projectId, updateFile, toast]);
+  }, [activeFile, fileContent, isSaving]);
 
   if (authLoading || projectLoading) {
     return (
@@ -75,169 +126,397 @@ export default function ProjectView() {
     );
   }
 
-  const handleSave = () => {
-    if (!activeFile) return;
-    setIsSaving(true);
-    updateFile(
-      { id: activeFile.id, projectId, content: fileContent },
-      {
-        onSuccess: (updated) => {
-          setActiveFile(updated);
-          setIsSaving(false);
-          toast({ title: "Saved", description: `${updated.name} saved successfully.` });
-        },
-        onError: () => setIsSaving(false)
+  const handleSaveDescription = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: descInput }),
+        credentials: "include",
+      });
+      if (res.ok) {
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
+        toast({ title: "Saved", description: "Description updated." });
+        setIsEditingDesc(false);
       }
-    );
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to update description", variant: "destructive" });
+    }
+  };
+
+  const handleSaveName = async () => {
+    if (!nameInput.trim()) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nameInput.trim() }),
+        credentials: "include",
+      });
+      if (res.ok) {
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
+        toast({ title: "Saved", description: "Name updated." });
+        setIsEditingName(false);
+      }
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to update name", variant: "destructive" });
+    }
+  };
+
+  const handleRun = async () => {
+    if (isRunning) {
+      try {
+        await fetch(`/api/projects/${projectId}/stop`, { method: "POST", credentials: "include" });
+        setIsRunning(false);
+        setConsoleOutput(prev => [...prev, "\n[DevAssist] Project stopped."]);
+        eventSourceRef.current?.close();
+      } catch (err) {
+        toast({ title: "Error", description: "Failed to stop project", variant: "destructive" });
+      }
+      return;
+    }
+
+    setConsoleOutput([]);
+    setActiveTab("console");
+    setIsRunning(true);
+
+    const eventSource = new EventSource(`/api/projects/${projectId}/run`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "stdout" || data.type === "stderr") {
+          setConsoleOutput(prev => [...prev, data.data]);
+        } else if (data.type === "started") {
+          setPreviewPort(data.port);
+        } else if (data.type === "exit") {
+          setIsRunning(false);
+          setConsoleOutput(prev => [...prev, `\n[DevAssist] Process exited with code ${data.code}`]);
+          eventSource.close();
+        } else if (data.type === "error") {
+          setConsoleOutput(prev => [...prev, `[Error] ${data.message}`]);
+          setIsRunning(false);
+          eventSource.close();
+        }
+      } catch (e) {
+        console.error("Parse error:", e);
+      }
+    };
+
+    eventSource.onerror = () => {
+      setIsRunning(false);
+      eventSource.close();
+    };
   };
 
   return (
-    <div className="h-screen flex bg-gradient-to-b from-blue-50 via-slate-50 to-white overflow-hidden p-4 gap-4">
-      
-      {/* Left Sidebar - Chat */}
-      <aside className={cn(
-        "backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden transition-all duration-300",
-        chatExpanded ? "w-[500px]" : "w-80"
-      )}>
-        {/* Header */}
-        <div className="p-4 border-b border-white/40">
-          <div className="flex items-center justify-between">
-            <Link 
-              href="/" 
-              className="text-sm text-gray-500 hover:text-gray-700 transition-colors flex items-center gap-1"
-              data-testid="link-back"
+    <div className="h-screen bg-gradient-to-b from-blue-50 via-slate-50 to-white overflow-hidden p-4">
+      <ResizablePanelGroup direction="horizontal" className="h-full gap-2">
+        {/* Left Panel - Chat */}
+        <ResizablePanel defaultSize={25} minSize={15} maxSize={50}>
+          <aside className="h-full backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="p-4 border-b border-white/40">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1 min-w-0 flex-1">
+                  <Link 
+                    href="/" 
+                    className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
+                    data-testid="link-back"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </Link>
+                  {isEditingName ? (
+                    <div className="flex items-center gap-1 flex-1">
+                      <input
+                        type="text"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        className="flex-1 text-sm px-2 py-1 rounded border border-gray-200 bg-white/50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        placeholder="Project name..."
+                        autoFocus
+                        onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
+                        data-testid="input-project-name"
+                      />
+                      <button onClick={handleSaveName} className="p-1 rounded hover:bg-green-100 text-green-600" data-testid="button-save-name">
+                        <Check className="w-3 h-3" />
+                      </button>
+                      <button onClick={() => setIsEditingName(false)} className="p-1 rounded hover:bg-red-100 text-red-500" data-testid="button-cancel-name">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span 
+                      className="text-sm text-gray-700 truncate cursor-pointer hover:text-gray-900 group flex items-center gap-1"
+                      onClick={() => { setNameInput(project.name); setIsEditingName(true); }}
+                      data-testid="text-project-name"
+                    >
+                      {project.name}
+                      <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+                    </span>
+                  )}
+                </div>
+              </div>
+              {/* Description */}
+              {isEditingDesc ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={descInput}
+                    onChange={(e) => setDescInput(e.target.value)}
+                    className="flex-1 text-xs px-2 py-1 rounded border border-gray-200 bg-white/50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    placeholder="Project description..."
+                    autoFocus
+                    data-testid="input-description"
+                  />
+                  <button
+                    onClick={handleSaveDescription}
+                    className="p-1 rounded hover:bg-green-100 text-green-600"
+                    data-testid="button-save-description"
+                  >
+                    <Check className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => setIsEditingDesc(false)}
+                    className="p-1 rounded hover:bg-red-100 text-red-500"
+                    data-testid="button-cancel-description"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <div 
+                  className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer hover:text-gray-600 group"
+                  onClick={() => {
+                    setDescInput(project.description || "");
+                    setIsEditingDesc(true);
+                  }}
+                  data-testid="text-description"
+                >
+                  <span className="truncate">{project.description || "Add description..."}</span>
+                  <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+              )}
+            </div>
+            
+            {/* Chat Section */}
+            <div className="p-3 flex-1 overflow-hidden flex flex-col">
+              <div className="flex-1 overflow-hidden">
+                <ChatPanel 
+                  projectId={projectId}
+                  currentFile={activeFile}
+                />
+              </div>
+            </div>
+          </aside>
+        </ResizablePanel>
+
+        <ResizableHandle className="mx-1 w-1 rounded-full bg-gray-200/50 hover:bg-blue-300 transition-colors" />
+
+        {/* Center Panel - Code Editor */}
+        <ResizablePanel defaultSize={55} minSize={30}>
+          <main className="h-full backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden">
+        {/* Editor Header with Tabs */}
+        <div className="px-4 py-3 border-b border-white/30 flex items-center justify-between backdrop-blur-sm">
+          {/* Liquid Glass Tabs */}
+          <div className="flex items-center p-1.5 backdrop-blur-xl bg-white/20 rounded-2xl border border-white/40 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)] gap-1">
+            <button
+              onClick={() => setActiveTab("code")}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300",
+                activeTab === "code" 
+                  ? "bg-white/80 backdrop-blur-sm text-gray-800 shadow-[0_2px_8px_rgba(0,0,0,0.08),inset_0_1px_1px_rgba(255,255,255,0.8)] border border-white/60" 
+                  : "text-gray-500 hover:bg-white/30 hover:text-gray-700"
+              )}
+              data-testid="tab-code"
             >
-              <ArrowLeft className="w-4 h-4" />
-              {project.name}
-            </Link>
-            <span className="text-xs text-gray-400 px-2 py-1 bg-white/50 rounded-lg">Private</span>
-          </div>
-        </div>
-        
-        {/* AI Assistant Section */}
-        <div className="p-4 flex-1 overflow-hidden flex flex-col">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center shadow-lg">
-              <MessageSquare className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-gray-800">AI Assistant</h3>
-              <p className="text-xs text-gray-500">Powered by Claude</p>
-            </div>
-          </div>
-          
-          <div className="flex-1 overflow-hidden">
-            <ChatPanel 
-              projectId={projectId}
-              currentFile={activeFile} 
-              projectFiles={project?.files || []} 
-              onExpand={setChatExpanded}
-              isExpanded={chatExpanded}
-            />
-          </div>
-        </div>
-      </aside>
-
-      {/* Center - Code Editor */}
-      <main className="flex-1 backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden">
-        {/* Editor Header */}
-        <div className="px-4 py-3 border-b border-white/40 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Link href="/" className="text-gray-400 hover:text-gray-600 transition-colors">
-              <ChevronLeft className="w-5 h-5" />
-            </Link>
-            <span className="text-sm text-gray-600 font-medium">IDE Project</span>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            <button className="p-2 rounded-lg hover:bg-white/50 transition-colors text-gray-400" data-testid="button-help">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <circle cx="12" cy="12" r="10" strokeWidth="1.5" />
-                <path strokeLinecap="round" strokeWidth="1.5" d="M12 8v4m0 4h.01" />
-              </svg>
+              <Code2 className="w-4 h-4" />
+              Code
             </button>
-            <button className="p-2 rounded-lg hover:bg-white/50 transition-colors text-gray-400" data-testid="button-info">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <circle cx="12" cy="12" r="10" strokeWidth="1.5" />
-                <path strokeLinecap="round" strokeWidth="1.5" d="M12 16v-4m0-4h.01" />
-              </svg>
+            <button
+              onClick={() => setActiveTab("preview")}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300",
+                activeTab === "preview" 
+                  ? "bg-white/80 backdrop-blur-sm text-gray-800 shadow-[0_2px_8px_rgba(0,0,0,0.08),inset_0_1px_1px_rgba(255,255,255,0.8)] border border-white/60" 
+                  : "text-gray-500 hover:bg-white/30 hover:text-gray-700"
+              )}
+              data-testid="tab-preview"
+            >
+              <Globe className="w-4 h-4" />
+              Preview
             </button>
-            <button className="p-2 rounded-lg hover:bg-white/50 transition-colors text-gray-400" data-testid="button-mail">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <rect x="2" y="4" width="20" height="16" rx="2" strokeWidth="1.5" />
-                <path strokeLinecap="round" strokeWidth="1.5" d="M22 6l-10 7L2 6" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        {/* Editor Toolbar */}
-        <div className="px-4 py-2 border-b border-white/30 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <button className="p-1.5 rounded-lg hover:bg-white/50 transition-colors text-gray-400">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <button className="p-1.5 rounded-lg hover:bg-white/50 transition-colors text-gray-400">
-              <ChevronRight className="w-4 h-4" />
+            <button
+              onClick={() => setActiveTab("console")}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300",
+                activeTab === "console" 
+                  ? "bg-white/80 backdrop-blur-sm text-gray-800 shadow-[0_2px_8px_rgba(0,0,0,0.08),inset_0_1px_1px_rgba(255,255,255,0.8)] border border-white/60" 
+                  : "text-gray-500 hover:bg-white/30 hover:text-gray-700"
+              )}
+              data-testid="tab-console"
+            >
+              <Terminal className="w-4 h-4" />
+              Console
             </button>
           </div>
           
           <button
-            onClick={handleSave}
-            disabled={!activeFile || isSaving}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/60 border border-white/80 text-gray-600 hover:bg-white/80 transition-all text-sm font-medium disabled:opacity-50 shadow-sm"
-            data-testid="button-save-file"
+            onClick={handleRun}
+            className={cn(
+              "flex items-center gap-2 px-5 py-2.5 rounded-xl backdrop-blur-sm text-white font-medium text-sm border border-white/30 shadow-[0_4px_16px_rgba(34,197,94,0.3),inset_0_1px_1px_rgba(255,255,255,0.3)] hover:shadow-[0_6px_20px_rgba(34,197,94,0.4)] hover:scale-[1.02] active:scale-[0.98] transition-all duration-200",
+              isRunning 
+                ? "bg-gradient-to-r from-red-500/90 to-orange-500/90" 
+                : "bg-gradient-to-r from-green-500/90 to-emerald-400/90"
+            )}
+            data-testid="button-run"
           >
-            {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            Save
+            {isRunning ? <Square className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+            {isRunning ? "Stop" : "Run"}
           </button>
         </div>
 
-        {/* Monaco Editor Area */}
+        {/* Content Area */}
         <div className="flex-1 overflow-hidden bg-gradient-to-b from-white/20 to-white/40">
-          {activeFile ? (
-            <Editor
-              height="100%"
-              defaultLanguage={activeFile.language || "javascript"}
-              path={activeFile.name}
-              value={fileContent}
-              onChange={(value) => setFileContent(value || "")}
-              theme="vs"
-              options={{
-                minimap: { enabled: false },
-                fontSize: 14,
-                padding: { top: 16, bottom: 16 },
-                fontFamily: "'JetBrains Mono', monospace",
-                smoothScrolling: true,
-                cursorBlinking: "smooth",
-                cursorSmoothCaretAnimation: "on",
-                scrollBeyondLastLine: false,
-                lineNumbers: "on",
-                renderLineHighlight: "all",
-                bracketPairColorization: { enabled: true },
-                automaticLayout: true
-              }}
-            />
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-4">
-              <div className="text-6xl text-blue-300/50">
-                <Code2 className="w-16 h-16" />
+          {activeTab === "code" && (
+            <>
+              {/* Code Toolbar */}
+              {activeFile && (
+                <div className="px-4 py-2 border-b border-white/30 flex items-center justify-between bg-white/20">
+                  <span className="text-sm text-gray-600 font-medium">{activeFile.name}</span>
+                  <button
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/60 border border-white/80 text-gray-600 hover:bg-white/80 transition-all text-sm disabled:opacity-50"
+                    data-testid="button-save-file"
+                  >
+                    {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Save
+                  </button>
+                </div>
+              )}
+              {/* Monaco Editor */}
+              <div className="h-full">
+                {activeFile ? (
+                  <Editor
+                    height="100%"
+                    defaultLanguage={activeFile.language || "javascript"}
+                    path={activeFile.name}
+                    value={fileContent}
+                    onChange={(value) => setFileContent(value || "")}
+                    theme="vs"
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 14,
+                      padding: { top: 16, bottom: 16 },
+                      fontFamily: "'JetBrains Mono', monospace",
+                      smoothScrolling: true,
+                      cursorBlinking: "smooth",
+                      cursorSmoothCaretAnimation: "on",
+                      scrollBeyondLastLine: false,
+                      lineNumbers: "on",
+                      renderLineHighlight: "all",
+                      bracketPairColorization: { enabled: true },
+                      automaticLayout: true
+                    }}
+                  />
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-4">
+                    <Code2 className="w-16 h-16 text-blue-300/50" />
+                    <p className="text-lg font-medium text-gray-500">Select a file to start coding</p>
+                    <p className="text-sm text-gray-400">Choose a file from the explorer or create a new one.</p>
+                  </div>
+                )}
               </div>
-              <p className="text-lg font-medium text-gray-500">Select a file to start coding</p>
-              <p className="text-sm text-gray-400">Choose a file from the explorer or create a new one.</p>
+            </>
+          )}
+
+          {activeTab === "preview" && (
+            <div className="h-full flex flex-col">
+              <div className="px-4 py-2 border-b border-white/30 flex items-center gap-2 bg-white/20">
+                <input 
+                  type="text" 
+                  value={previewPort ? `http://localhost:${previewPort}` : "Not running"} 
+                  readOnly
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-white/60 border border-white/80 text-sm text-gray-600"
+                />
+                <button 
+                  onClick={() => previewPort && window.open(`http://localhost:${previewPort}`, "_blank")}
+                  disabled={!previewPort}
+                  className="p-1.5 rounded-lg bg-white/60 hover:bg-white/80 transition-colors text-gray-500 disabled:opacity-50"
+                >
+                  <Globe className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex-1 bg-white">
+                {previewPort && isRunning ? (
+                  <iframe 
+                    src={`http://localhost:${previewPort}`}
+                    className="w-full h-full border-0"
+                    title="Preview"
+                  />
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-4">
+                    <Globe className="w-16 h-16 text-blue-300/50" />
+                    <p className="text-lg font-medium text-gray-500">No preview available</p>
+                    <p className="text-sm text-gray-400">Click Run to start your project</p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
-        </div>
-      </main>
 
-      {/* Right Sidebar - File Explorer */}
-      <aside className="w-56 backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden">
-        <FileExplorer 
-          projectId={projectId} 
-          activeFileId={activeFile?.id ?? null} 
-          onSelectFile={setActiveFile}
-        />
-      </aside>
+          {activeTab === "console" && (
+            <div className="h-full flex flex-col">
+              <div className="px-4 py-2 border-b border-white/30 flex items-center justify-between bg-white/20">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 font-medium">Console Output</span>
+                  {isRunning && (
+                    <span className="flex items-center gap-1 text-xs text-green-600">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                      Running
+                    </span>
+                  )}
+                </div>
+                <button 
+                  onClick={() => setConsoleOutput([])}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  Clear
+                </button>
+              </div>
+              <div 
+                ref={consoleRef}
+                className="flex-1 p-4 font-mono text-sm bg-gray-900 text-gray-100 overflow-auto"
+              >
+                {consoleOutput.length === 0 ? (
+                  <div className="text-gray-500">Click Run to start your project...</div>
+                ) : (
+                  consoleOutput.map((line, idx) => (
+                    <pre key={idx} className="whitespace-pre-wrap break-all">{line}</pre>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+            </div>
+          </main>
+        </ResizablePanel>
+
+        <ResizableHandle className="mx-1 w-1 rounded-full bg-gray-200/50 hover:bg-blue-300 transition-colors" />
+
+        {/* Right Panel - File Explorer */}
+        <ResizablePanel defaultSize={20} minSize={10} maxSize={35}>
+          <aside className="h-full backdrop-blur-md bg-white/40 rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] flex flex-col overflow-hidden">
+            <FileExplorer 
+              projectId={projectId} 
+              activeFileId={activeFile?.id ?? null} 
+              onSelectFile={setActiveFile}
+            />
+          </aside>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { queryClient } from "@/lib/queryClient";
 export interface User {
   id: number;
   email: string;
+  name?: string | null;
 }
 
 export function useAuth() {
@@ -17,11 +18,11 @@ export function useAuth() {
   });
 
   const register = useMutation({
-    mutationFn: async ({ email, password }: { email: string; password: string }) => {
+    mutationFn: async ({ email, password, name }: { email: string; password: string; name?: string }) => {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, name }),
       });
       if (!res.ok) {
         const error = await res.json();

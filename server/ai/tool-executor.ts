@@ -3,19 +3,38 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { AgentAction } from "./model-router";
+import { storage } from "../storage";
 
 const execAsync = promisify(exec);
 
-const PROJECT_ROOT = process.cwd();
-const ALLOWED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".html", ".md", ".txt", ".sql"];
+const WORKSPACE_ROOT = path.join(process.cwd(), "workspace");
+const ALLOWED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".html", ".md", ".txt", ".sql", ".py", ".sh"];
 const BLOCKED_PATHS = ["node_modules", ".git", ".env", "secrets"];
 const MAX_DELETE_LINES = 50;
 
+let currentProjectId: number | null = null;
+
+export function setProjectContext(projectId: number) {
+  currentProjectId = projectId;
+}
+
+export function clearProjectContext() {
+  currentProjectId = null;
+}
+
+function getProjectRoot(): string {
+  if (currentProjectId) {
+    return path.join(WORKSPACE_ROOT, `project_${currentProjectId}`);
+  }
+  return WORKSPACE_ROOT;
+}
+
 function isPathSafe(filePath: string): boolean {
+  const projectRoot = getProjectRoot();
   const normalized = path.normalize(filePath);
-  const resolved = path.resolve(PROJECT_ROOT, normalized);
+  const resolved = path.resolve(projectRoot, normalized);
   
-  if (!resolved.startsWith(PROJECT_ROOT)) {
+  if (!resolved.startsWith(projectRoot)) {
     return false;
   }
   
@@ -99,7 +118,7 @@ async function readFile(filePath: string): Promise<ToolResult> {
     return { success: false, error: "Access denied: path not allowed" };
   }
   
-  const fullPath = path.resolve(PROJECT_ROOT, filePath);
+  const fullPath = path.resolve(getProjectRoot(), filePath);
   
   try {
     const content = await fs.readFile(fullPath, "utf-8");
@@ -119,7 +138,7 @@ async function writeFile(filePath: string, content: string): Promise<ToolResult>
     return { success: false, error: `File type not allowed: ${ext}` };
   }
   
-  const fullPath = path.resolve(PROJECT_ROOT, filePath);
+  const fullPath = path.resolve(getProjectRoot(), filePath);
   const dir = path.dirname(fullPath);
   
   try {
@@ -136,7 +155,7 @@ async function applyDiff(filePath: string, search: string, replace: string): Pro
     return { success: false, error: "Access denied: path not allowed" };
   }
   
-  const fullPath = path.resolve(PROJECT_ROOT, filePath);
+  const fullPath = path.resolve(getProjectRoot(), filePath);
   
   try {
     const content = await fs.readFile(fullPath, "utf-8");
@@ -172,7 +191,7 @@ async function runCommand(command: string): Promise<ToolResult> {
   
   try {
     const { stdout, stderr } = await execAsync(command, {
-      cwd: PROJECT_ROOT,
+      cwd: getProjectRoot(),
       timeout: 30000,
       maxBuffer: 1024 * 1024
     });
@@ -194,7 +213,7 @@ async function listFiles(dirPath: string): Promise<ToolResult> {
     return { success: false, error: "Access denied: path not allowed" };
   }
   
-  const fullPath = path.resolve(PROJECT_ROOT, dirPath);
+  const fullPath = path.resolve(getProjectRoot(), dirPath);
   const files: string[] = [];
   
   const walk = async (dir: string, prefix: string = ""): Promise<void> => {
@@ -230,7 +249,7 @@ async function searchCode(query: string): Promise<ToolResult> {
   try {
     const { stdout } = await execAsync(
       `grep -r --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" -n "${query}" . | head -50`,
-      { cwd: PROJECT_ROOT, timeout: 10000 }
+      { cwd: getProjectRoot(), timeout: 10000 }
     );
     
     return { success: true, output: stdout || "No matches found" };

@@ -3,14 +3,17 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
 import { useState } from "react";
-import { Plus, LogOut, Code2, FolderOpen, Sparkles, Trash2 } from "lucide-react";
+import { LogOut, Code2, Sparkles, ArrowRight, MoreVertical, Paperclip, Pencil, Check, X } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 export default function Home() {
   const { user, isLoading: authLoading, logout } = useAuth();
   const [, setLocation] = useLocation();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [isCreating, setIsCreating] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const { toast } = useToast();
 
   const { data: projects = [], isLoading: projectsLoading } = useQuery({
     queryKey: ["/api/projects"],
@@ -23,20 +26,19 @@ export default function Home() {
   });
 
   const createProject = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (description: string) => {
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description }),
+        body: JSON.stringify({ name: "", description }),
       });
       if (!res.ok) throw new Error("Failed to create project");
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
-      setName("");
-      setDescription("");
-      setIsCreating(false);
+      localStorage.setItem(`pending_message_${project.id}`, prompt);
+      setLocation(`/project/${project.id}`);
     },
   });
 
@@ -50,14 +52,55 @@ export default function Home() {
     },
   });
 
+  const updateProjectName = useMutation({
+    mutationFn: async ({ id, name }: { id: number; name: string }) => {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error("Failed to update project");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      setEditingId(null);
+      toast({ title: "Saved", description: "Project name updated." });
+    },
+  });
+
+  const handleSaveName = (id: number) => {
+    if (!editName.trim()) return;
+    updateProjectName.mutate({ id, name: editName.trim() });
+  };
+
+  const startEditing = (project: any, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditingId(project.id);
+    setEditName(project.name || "");
+  };
+
   const handleLogout = async () => {
     await logout.mutateAsync();
     setLocation("/login");
   };
 
+  const handleStart = () => {
+    if (!prompt.trim()) return;
+    createProject.mutate(prompt);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleStart();
+    }
+  };
+
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-blue-50 via-slate-50 to-white flex items-center justify-center">
+      <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 animate-pulse" />
           <p className="text-gray-500 text-sm">Loading...</p>
@@ -71,146 +114,202 @@ export default function Home() {
     return null;
   }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-50 via-slate-50 to-white p-6 relative overflow-hidden">
-      {/* Gradient orbs */}
-      <div className="absolute top-20 right-20 w-80 h-80 bg-blue-200/30 rounded-full blur-3xl pointer-events-none"></div>
-      <div className="absolute bottom-20 left-20 w-96 h-96 bg-cyan-200/30 rounded-full blur-3xl pointer-events-none"></div>
+  const userName = user.name || user.email?.split("@")[0] || "there";
 
-      <div className="max-w-6xl mx-auto relative z-10">
-        {/* Header */}
-        <header className="backdrop-blur-xl bg-white/60 border border-white/80 rounded-2xl p-4 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.06)] flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg">
-              <Code2 className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-800">My Projects</h1>
-              <p className="text-xs text-gray-500">{user.email}</p>
+  return (
+    <div className="min-h-screen bg-white overflow-y-auto">
+      {/* Header */}
+      <header className="border-b border-gray-100 px-6 py-3 flex items-center justify-between sticky top-0 bg-white z-10">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center">
+            <Code2 className="w-4 h-4 text-white" />
+          </div>
+          <span className="font-semibold text-gray-800">DevAssist</span>
+        </div>
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all text-sm"
+          data-testid="button-logout"
+        >
+          <LogOut className="w-4 h-4" />
+          Logout
+        </button>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-3xl mx-auto px-6 pt-20 pb-12">
+        {/* Greeting */}
+        <h1 className="text-3xl font-semibold text-gray-900 text-center mb-10">
+          Hi {userName}, what do you want to make?
+        </h1>
+
+        {/* Chat Input Card - Liquid Glass Design */}
+        <div className="backdrop-blur-xl bg-white/70 border border-white/80 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] overflow-hidden mb-16">
+          {/* Header with App label */}
+          <div className="px-4 pt-4 pb-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100/80 text-sm text-gray-700">
+              <Sparkles className="w-4 h-4" />
+              App
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/60 border border-gray-200 text-gray-600 hover:bg-white/80 hover:text-gray-800 transition-all text-sm font-medium"
-            data-testid="button-logout"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </button>
-        </header>
 
-        {/* Create Project Section */}
-        <div className="backdrop-blur-xl bg-white/60 border border-white/80 rounded-2xl p-6 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.06)]">
-          {!isCreating ? (
-            <button
-              onClick={() => setIsCreating(true)}
-              className="flex items-center gap-3 text-gray-600 hover:text-gray-800 transition-colors"
-              data-testid="button-show-create-form"
-            >
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-100 to-cyan-100 flex items-center justify-center">
-                <Plus className="w-6 h-6 text-blue-500" />
-              </div>
-              <div className="text-left">
-                <p className="font-semibold">Create New Project</p>
-                <p className="text-sm text-gray-500">Start building with AI assistance</p>
-              </div>
+          {/* Input Area */}
+          <div className="px-4 pb-2">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Describe your idea, '/' for integrations..."
+              rows={3}
+              className="w-full resize-none border-0 bg-transparent text-gray-800 placeholder-gray-400 focus:outline-none text-base"
+              data-testid="input-project-prompt"
+            />
+          </div>
+
+          {/* Bottom Bar */}
+          <div className="px-4 pb-4 flex items-center justify-between">
+            <button className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100/50 transition-colors">
+              <Paperclip className="w-5 h-5" />
             </button>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center gap-3 mb-4">
-                <Sparkles className="w-5 h-5 text-blue-500" />
-                <h2 className="font-semibold text-gray-800">New Project</h2>
-              </div>
-              <input
-                type="text"
-                placeholder="Project name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-white/60 border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-transparent transition-all text-gray-800 placeholder-gray-400"
-                data-testid="input-project-name"
-              />
-              <input
-                type="text"
-                placeholder="Description (optional)"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-white/60 border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-transparent transition-all text-gray-800 placeholder-gray-400"
-                data-testid="input-project-description"
-              />
-              <div className="flex gap-3">
-                <button
-                  onClick={() => createProject.mutate()}
-                  disabled={!name || createProject.isPending}
-                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-400 text-white font-semibold shadow-[0_4px_16px_rgba(59,130,246,0.3)] hover:shadow-[0_6px_24px_rgba(59,130,246,0.4)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50"
-                  data-testid="button-create-project"
-                >
-                  <Plus className="w-4 h-4" />
-                  {createProject.isPending ? "Creating..." : "Create Project"}
-                </button>
-                <button
-                  onClick={() => { setIsCreating(false); setName(""); setDescription(""); }}
-                  className="px-6 py-3 rounded-xl bg-white/60 border border-gray-200 text-gray-600 hover:bg-white/80 transition-all font-medium"
-                  data-testid="button-cancel-create"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+
+            <button
+              onClick={handleStart}
+              disabled={!prompt.trim() || createProject.isPending}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-blue-500 hover:text-blue-600 disabled:opacity-50 transition-colors"
+              data-testid="button-start-project"
+            >
+              {createProject.isPending ? "Creating..." : "Start"}
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Recent Apps Section */}
+        <div className="mb-6 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900">Your recent Apps</h2>
+          {projects.length > 6 && (
+            <button 
+              onClick={() => setShowAll(!showAll)}
+              className="flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 transition-colors"
+              data-testid="button-view-all"
+            >
+              {showAll ? "Show Less" : "View All"}
+              <ArrowRight className={`w-4 h-4 transition-transform ${showAll ? "rotate-90" : ""}`} />
+            </button>
           )}
         </div>
 
-        {/* Projects Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {projectsLoading ? (
-            <div className="col-span-full flex items-center justify-center py-12">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-400 animate-pulse" />
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="col-span-full backdrop-blur-xl bg-white/40 border border-white/60 rounded-2xl p-12 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-blue-100 to-cyan-100 flex items-center justify-center">
-                <FolderOpen className="w-8 h-8 text-blue-400" />
+        {/* Projects Grid - Scrollable */}
+        <div className="max-h-[60vh] overflow-y-auto pr-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-8">
+            {projectsLoading ? (
+              <div className="col-span-full flex items-center justify-center py-12">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-400 animate-pulse" />
               </div>
-              <p className="text-gray-500 mb-2">No projects yet</p>
-              <p className="text-sm text-gray-400">Create your first project to get started</p>
-            </div>
-          ) : (
-            projects.map((project: any) => (
-              <div
-                key={project.id}
-                className="group backdrop-blur-xl bg-white/60 border border-white/80 rounded-2xl p-5 shadow-[0_4px_24px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_40px_rgba(59,130,246,0.15)] hover:border-blue-200 transition-all cursor-pointer"
-                data-testid={`project-card-${project.id}`}
-              >
-                <Link href={`/project/${project.id}`}>
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-md">
-                      <Code2 className="w-5 h-5 text-white" />
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (confirm("Delete this project?")) {
-                          deleteProject.mutate(project.id);
-                        }
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-all"
-                      data-testid={`button-delete-project-${project.id}`}
+            ) : projects.length === 0 ? (
+              <div className="col-span-full text-center py-12 text-gray-400">
+                <p>No projects yet. Describe your idea above to get started!</p>
+              </div>
+            ) : (
+              (showAll ? projects : projects.slice(0, 6)).map((project: any) => (
+                <div key={project.id}>
+                  {editingId === project.id ? (
+                    <div
+                      className="group relative backdrop-blur-xl bg-white/60 border border-white/80 rounded-2xl overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.06),inset_0_1px_0_rgba(255,255,255,0.9)]"
+                      data-testid={`project-card-${project.id}`}
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <h3 className="font-semibold text-gray-800 mb-1">
-                    {project.name}
-                  </h3>
-                  <p className="text-sm text-gray-500 line-clamp-2">
-                    {project.description || "No description"}
-                  </p>
-                </Link>
-              </div>
-            ))
-          )}
+                      <div className="aspect-[4/3] bg-gradient-to-br from-gray-100/80 to-gray-50/80 flex items-center justify-center">
+                        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg">
+                          <Code2 className="w-7 h-7 text-white" />
+                        </div>
+                      </div>
+                      <div className="p-3 border-t border-white/60 bg-white/40">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && handleSaveName(project.id)}
+                            className="flex-1 text-sm px-2 py-1 rounded border border-gray-200 bg-white/80 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                            placeholder="Project name..."
+                            autoFocus
+                            onClick={(e) => e.stopPropagation()}
+                            data-testid={`input-edit-name-${project.id}`}
+                          />
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleSaveName(project.id); }}
+                            className="p-1 rounded hover:bg-green-100 text-green-600"
+                            data-testid={`button-save-name-${project.id}`}
+                          >
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setEditingId(null); }}
+                            className="p-1 rounded hover:bg-red-100 text-red-500"
+                            data-testid={`button-cancel-name-${project.id}`}
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-500 truncate mt-1">
+                          {project.description?.slice(0, 40) || "No description"}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <Link href={`/project/${project.id}`}>
+                      <div
+                        className="group relative backdrop-blur-xl bg-white/60 border border-white/80 rounded-2xl overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.06),inset_0_1px_0_rgba(255,255,255,0.9)] hover:shadow-[0_8px_32px_rgba(0,0,0,0.1)] transition-all cursor-pointer"
+                        data-testid={`project-card-${project.id}`}
+                      >
+                        <div className="aspect-[4/3] bg-gradient-to-br from-gray-100/80 to-gray-50/80 flex items-center justify-center">
+                          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg">
+                            <Code2 className="w-7 h-7 text-white" />
+                          </div>
+                        </div>
+                        <div className="p-3 border-t border-white/60 bg-white/40">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <h3 className="font-medium text-gray-900 text-sm truncate">
+                                {project.name || "Untitled"}
+                              </h3>
+                              <p className="text-xs text-gray-500 truncate">
+                                {project.description?.slice(0, 40) || "No description"}
+                              </p>
+                            </div>
+                            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 flex-shrink-0 transition-all">
+                              <button
+                                onClick={(e) => startEditing(project, e)}
+                                className="p-1.5 rounded-lg hover:bg-blue-100/80 text-gray-400 hover:text-blue-500"
+                                data-testid={`button-edit-name-${project.id}`}
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (confirm("Delete this project?")) {
+                                    deleteProject.mutate(project.id);
+                                  }
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-red-100/80 text-gray-400 hover:text-red-500"
+                                data-testid={`button-delete-project-${project.id}`}
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

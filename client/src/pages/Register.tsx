@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
-import { Mail, Lock, Code2, Sparkles } from "lucide-react";
+import { Mail, Lock, Code2, Sparkles, User } from "lucide-react";
 
 export default function Register() {
   const [, setLocation] = useLocation();
   const { register } = useAuth();
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -21,7 +22,7 @@ export default function Register() {
     }
 
     try {
-      await register.mutateAsync({ email, password });
+      await register.mutateAsync({ email, password, name });
       setLocation("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -57,6 +58,24 @@ export default function Register() {
                 {error}
               </div>
             )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Your Name
+              </label>
+              <div className="relative">
+                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="John"
+                  className="w-full pl-12 pr-4 py-3 rounded-xl bg-white/60 border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-transparent transition-all text-gray-800 placeholder-gray-400"
+                  required
+                  data-testid="input-name"
+                />
+              </div>
+            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">

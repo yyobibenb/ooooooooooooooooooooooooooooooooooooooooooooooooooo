@@ -22,7 +22,7 @@ export async function runAgentLoop(
   options: OrchestratorOptions = {}
 ): Promise<{ messages: ChatMessage[]; toolResults: ToolResult[] }> {
   const client = getAnthropicClient();
-  const maxIterations = options.maxIterations || 5;
+  const maxIterations = options.maxIterations || 15;
   const model = pickModel("agent");
   const systemPrompt = getSystemPrompt(options.projectContext || {});
   
