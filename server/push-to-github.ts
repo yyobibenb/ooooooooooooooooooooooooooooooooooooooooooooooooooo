@@ -21,7 +21,6 @@ async function getAllFiles(dir: string, baseDir: string = dir): Promise<{ path: 
         entry.name === '.upm' ||
         entry.name === 'workspace' ||
         entry.name === 'attached_assets' ||
-        entry.name === 'package-lock.json' ||
         entry.name === '.replit' ||
         entry.name === 'replit.nix' ||
         entry.name === '.env' ||

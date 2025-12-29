@@ -9,7 +9,7 @@ interface ChatMessage {
 }
 
 interface OrchestratorOptions {
-  maxIterations?: number;
+  maxTimeMinutes?: number;
   projectContext?: {
     fileTree?: string[];
     currentFile?: { name: string; language: string; content: string } | null;
@@ -22,15 +22,37 @@ export async function runAgentLoop(
   options: OrchestratorOptions = {}
 ): Promise<{ messages: ChatMessage[]; toolResults: ToolResult[] }> {
   const client = getAnthropicClient();
-  const maxIterations = options.maxIterations || 15;
+  const maxTimeMinutes = options.maxTimeMinutes || 200;
+  const maxTimeMs = maxTimeMinutes * 60 * 1000;
+  const startTime = Date.now();
   const model = pickModel("agent");
   const systemPrompt = getSystemPrompt(options.projectContext || {});
   
   const messages: ChatMessage[] = [{ role: "user", content: initialPrompt }];
   const allToolResults: ToolResult[] = [];
   
-  for (let i = 0; i < maxIterations; i++) {
-    res.write(`data: ${JSON.stringify({ step: i + 1, status: "thinking" })}\n\n`);
+  let iteration = 0;
+  while (true) {
+    iteration++;
+    const elapsedMs = Date.now() - startTime;
+    const elapsedMinutes = Math.floor(elapsedMs / 60000);
+    const elapsedSeconds = Math.floor((elapsedMs % 60000) / 1000);
+    
+    if (elapsedMs >= maxTimeMs) {
+      res.write(`data: ${JSON.stringify({ 
+        step: iteration, 
+        status: "timeout", 
+        message: `Time limit reached (${maxTimeMinutes} minutes)` 
+      })}\n\n`);
+      break;
+    }
+    
+    res.write(`data: ${JSON.stringify({ 
+      step: iteration, 
+      status: "thinking",
+      elapsed: `${elapsedMinutes}m ${elapsedSeconds}s`,
+      maxTime: `${maxTimeMinutes}m`
+    })}\n\n`);
     
     try {
       const response = await client.messages.create({
@@ -46,17 +68,17 @@ export async function runAgentLoop(
       const content = response.content[0].type === "text" ? response.content[0].text : "";
       messages.push({ role: "assistant", content });
       
-      res.write(`data: ${JSON.stringify({ step: i + 1, status: "response", content })}\n\n`);
+      res.write(`data: ${JSON.stringify({ step: iteration, status: "response", content })}\n\n`);
       
       const agentResponse = parseAgentResponse(content);
       
       if (agentResponse.actions.length === 0) {
-        res.write(`data: ${JSON.stringify({ step: i + 1, status: "done", message: agentResponse.message })}\n\n`);
+        res.write(`data: ${JSON.stringify({ step: iteration, status: "done", message: agentResponse.message })}\n\n`);
         break;
       }
       
       res.write(`data: ${JSON.stringify({ 
-        step: i + 1, 
+        step: iteration, 
         status: "executing", 
         actions: agentResponse.actions.map(a => ({ type: a.type, path: a.path }))
       })}\n\n`);
@@ -74,7 +96,7 @@ export async function runAgentLoop(
       messages.push({ role: "user", content: `Tool execution results:\n\n${toolResultMessage}` });
       
       res.write(`data: ${JSON.stringify({ 
-        step: i + 1, 
+        step: iteration, 
         status: hasErrors ? "error" : "executed",
         results: results.map(r => ({ success: r.success, output: r.output?.substring(0, 200), error: r.error }))
       })}\n\n`);
@@ -85,7 +107,7 @@ export async function runAgentLoop(
       
     } catch (error) {
       console.error("Agent loop error:", error);
-      res.write(`data: ${JSON.stringify({ step: i + 1, status: "error", error: "Agent execution failed" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ step: iteration, status: "error", error: "Agent execution failed" })}\n\n`);
       break;
     }
   }

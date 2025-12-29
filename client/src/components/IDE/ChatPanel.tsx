@@ -100,7 +100,6 @@ function AgentStatusPanel({ step, actions, content }: { step: number; actions: T
   };
 
   const completedActions = actions.filter(a => a.result);
-  const pendingActions = actions.filter(a => !a.result);
   
   return (
     <div className="rounded-xl backdrop-blur-md bg-gradient-to-r from-blue-50/80 to-purple-50/80 border border-white/60 p-3 shadow-sm">
@@ -112,7 +111,7 @@ function AgentStatusPanel({ step, actions, content }: { step: number; actions: T
         <div className="flex items-center gap-1 text-[10px] text-gray-500">
           <span>Step {step}</span>
           <span className="text-gray-300">|</span>
-          <span>{completedActions.length} actions done</span>
+          <span>{completedActions.length} actions</span>
         </div>
       </div>
       
@@ -128,16 +127,6 @@ function AgentStatusPanel({ step, actions, content }: { step: number; actions: T
           ))}
         </div>
       )}
-      
-      <div className="mt-2 flex items-center gap-2">
-        <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden">
-          <div 
-            className="h-full bg-gradient-to-r from-blue-400 to-purple-500 transition-all duration-500"
-            style={{ width: `${Math.min(step * 10, 100)}%` }}
-          />
-        </div>
-        <span className="text-[10px] text-gray-400">{Math.min(step * 10, 100)}%</span>
-      </div>
     </div>
   );
 }

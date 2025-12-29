@@ -89,12 +89,14 @@ export function useChatStream(conversationId: number, projectId: number) {
   const [agentStep, setAgentStep] = useState(0);
   const [toolActions, setToolActions] = useState<ToolAction[]>([]);
   const [completedActions, setCompletedActions] = useState<ToolAction[]>([]);
+  const [elapsedTime, setElapsedTime] = useState<string | undefined>();
 
   const sendMessage = async (content: string, modelOverride: ModelChoice = "auto") => {
     setIsStreaming(true);
     setStreamingContent("");
     setAgentStep(0);
     setToolActions([]);
+    setElapsedTime(undefined);
 
     queryClient.setQueryData(["project-conversation", projectId], (old: any) => {
       if (!old) return old;
