@@ -63,6 +63,8 @@ export async function runAgentLoop(
           role: m.role as "user" | "assistant",
           content: m.content
         }))
+      }, {
+        timeout: 120000 // 2 minutes as a header/option, not in the body
       });
       
       const content = response.content[0].type === "text" ? response.content[0].text : "";
