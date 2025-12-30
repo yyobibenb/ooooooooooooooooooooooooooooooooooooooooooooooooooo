@@ -29,9 +29,18 @@ function getProjectRoot(): string {
   return WORKSPACE_ROOT;
 }
 
+// Ensure config files go to root
+const CONFIG_FILES = ["drizzle.config.ts", "tsconfig.json", "vite.config.ts", "tailwind.config.ts"];
+
 function isPathSafe(filePath: string): boolean {
+  let finalPath = filePath;
+  if (CONFIG_FILES.includes(path.basename(filePath))) {
+    // Force config files to be relative to project root
+    finalPath = path.basename(filePath);
+  }
+  
   const projectRoot = getProjectRoot();
-  const normalized = path.normalize(filePath);
+  const normalized = path.normalize(finalPath);
   const resolved = path.resolve(projectRoot, normalized);
   
   if (!resolved.startsWith(projectRoot)) {
