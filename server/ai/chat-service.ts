@@ -125,7 +125,6 @@ async function runAgentLoop(
       const response = await client.messages.create({
         model,
         max_tokens: options.maxTokens || 8192,
-        timeout: 12000000, // 200 minutes timeout for very long tasks
         system: [
           {
             type: "text",
@@ -136,6 +135,8 @@ async function runAgentLoop(
         tools: AGENT_TOOLS,
         tool_choice: { type: "auto" },
         messages: anthropicMessages,
+      }, {
+        timeout: 12000000, // 200 minutes timeout for very long tasks, as a header/option
       });
 
       let hasToolUse = false;
